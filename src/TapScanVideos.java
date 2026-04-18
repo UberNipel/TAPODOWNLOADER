@@ -7,7 +7,11 @@ import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.InputStream;
 import java.text.SimpleDateFormat;
-import java.util.*;
+import java.util.ArrayList;
+import java.util.Date;
+import java.util.LinkedHashSet;
+import java.util.List;
+import java.util.Set;
 
 public class TapScanVideos {
 
@@ -22,16 +26,24 @@ public class TapScanVideos {
     private static final int SWIPE_END_Y = 2050;
     private static final int SWIPE_DURATION_MS = 1000;
 
-    private static final long WAIT_AFTER_SWIPE_MS = 2000;
+    private static final long WAIT_AFTER_SWIPE_MS = 500;
+    private static final long WAIT_AFTER_MENU_OPEN_MS = 250;
+    private static final long WAIT_AFTER_DOWNLOAD_TAP_MS = 250;
+
+    // fallback: верхний пункт нижнего меню
+    // 2600 у тебя бил в Delete, значит Download должен быть заметно выше
+    private static final int FALLBACK_DOWNLOAD_X = 672;
+    private static final int FALLBACK_DOWNLOAD_Y = 2360;
+    public static final int RETRY_COUNT = 5;
 
     public static void main(String[] args) throws Exception {
 
+        long l = System.nanoTime();
         Set<String> allUniqueVideoIds = new LinkedHashSet<>();
 
         int noNewDataInRow = 0;
 
         while (true) {
-
             DumpResult dump = dumpAndParse();
 
             List<VideoCard> newCards = new ArrayList<>();
@@ -46,18 +58,20 @@ public class TapScanVideos {
             System.out.println("New cards: " + newCards.size()
                     + " total: " + allUniqueVideoIds.size());
 
-            // загрузка новых карточек
             for (VideoCard card : newCards) {
-
                 System.out.println("Download: " + card.time);
 
                 tap(card.menuX, card.menuY);
+                Thread.sleep(WAIT_AFTER_MENU_OPEN_MS);
 
-                Thread.sleep(500);
+                boolean tappedDownload = tapDownloadFromOpenedMenu();
 
-                tapDownload();
+                if (!tappedDownload) {
+                    System.out.println("Download option not found in XML, fallback tap used.");
+                    tap(FALLBACK_DOWNLOAD_X, FALLBACK_DOWNLOAD_Y);
+                }
 
-                Thread.sleep(1000);
+                Thread.sleep(WAIT_AFTER_DOWNLOAD_TAP_MS);
             }
 
             if (newCards.isEmpty()) {
@@ -66,20 +80,20 @@ public class TapScanVideos {
                 noNewDataInRow = 0;
             }
 
-            if (noNewDataInRow >= 2) {
+            if (noNewDataInRow >= RETRY_COUNT) {
                 break;
             }
 
             slowSwipeListUp();
-
             Thread.sleep(WAIT_AFTER_SWIPE_MS);
         }
 
         System.out.println("Finished. Total: " + allUniqueVideoIds.size());
+
+        System.out.println("Time " + (System.nanoTime() - l));
     }
 
     private static DumpResult dumpAndParse() throws Exception {
-
         String ts = new SimpleDateFormat("yyyyMMdd_HHmmss_SSS").format(new Date());
         String localFile = "dump_" + ts + ".xml";
 
@@ -91,27 +105,23 @@ public class TapScanVideos {
                 .parse(new File(localFile));
 
         NodeList nodes = doc.getElementsByTagName("node");
-
         List<VideoCard> cards = new ArrayList<>();
 
         for (int i = 0; i < nodes.getLength(); i++) {
-
             Element el = (Element) nodes.item(i);
-
             String id = el.getAttribute("resource-id");
 
             if ("com.tplink.iot:id/message_info_time".equals(id)) {
-
                 String text = el.getAttribute("text");
 
                 if (isVideoTime(text)) {
-
                     String bounds = el.getAttribute("bounds");
-
                     int[] xy = center(bounds);
 
-                    // кнопка меню справа
-                    int menuX = 1200;
+                    // В твоих дампах кнопка More живёт справа от карточки:
+                    // resource-id="com.tplink.iot:id/img_item_more"
+                    // bounds примерно [1146,...][1290,...]
+                    int menuX = 1218;
                     int menuY = xy[1];
 
                     cards.add(new VideoCard(text, menuX, menuY));
@@ -122,20 +132,72 @@ public class TapScanVideos {
         return new DumpResult(cards);
     }
 
-    private static void tapDownload() throws Exception {
+    private static boolean tapDownloadFromOpenedMenu() throws Exception {
+        String ts = new SimpleDateFormat("yyyyMMdd_HHmmss_SSS").format(new Date());
+        String localFile = "menu_" + ts + ".xml";
 
-        DumpResult dump = dumpAndParse();
+        run(ADB, "-s", DEVICE, "shell", "uiautomator", "dump", REMOTE_XML);
+        run(ADB, "-s", DEVICE, "pull", REMOTE_XML, localFile);
 
-        for (VideoCard card : dump.cards) {
-            // ищем Download
+        Document doc = DocumentBuilderFactory.newInstance()
+                .newDocumentBuilder()
+                .parse(new File(localFile));
+
+        NodeList nodes = doc.getElementsByTagName("node");
+
+        Element bestCandidate = null;
+        int bestY = Integer.MAX_VALUE;
+
+        for (int i = 0; i < nodes.getLength(); i++) {
+            Element el = (Element) nodes.item(i);
+
+            String text = safe(el.getAttribute("text"));
+            String contentDesc = safe(el.getAttribute("content-desc"));
+            String bounds = safe(el.getAttribute("bounds"));
+
+            if (bounds.isEmpty()) {
+                continue;
+            }
+
+            int[] xy = center(bounds);
+            int centerY = xy[1];
+
+            // игнорируем верхнюю вкладку Download в хедере
+            if (centerY < 1800) {
+                continue;
+            }
+
+            boolean looksLikeDownload =
+                    containsIgnoreCase(text, "download") ||
+                            containsIgnoreCase(contentDesc, "download");
+
+            if (looksLikeDownload) {
+                if (centerY < bestY) {
+                    bestY = centerY;
+                    bestCandidate = el;
+                }
+            }
         }
 
-        // координаты кнопки Download (пример)
-        tap(600, 2600);
+        if (bestCandidate != null) {
+            int[] xy = center(bestCandidate.getAttribute("bounds"));
+            System.out.println("Tap Download by XML: " + xy[0] + "," + xy[1]);
+            tap(xy[0], xy[1]);
+            return true;
+        }
+
+        return false;
+    }
+
+    private static boolean containsIgnoreCase(String s, String part) {
+        return s != null && s.toLowerCase().contains(part.toLowerCase());
+    }
+
+    private static String safe(String s) {
+        return s == null ? "" : s.trim();
     }
 
     private static void tap(int x, int y) throws Exception {
-
         run(
                 ADB, "-s", DEVICE, "shell", "input", "tap",
                 String.valueOf(x),
@@ -148,7 +210,6 @@ public class TapScanVideos {
     }
 
     private static void slowSwipeListUp() throws Exception {
-
         run(
                 ADB, "-s", DEVICE, "shell", "input", "swipe",
                 String.valueOf(SWIPE_X),
@@ -160,7 +221,6 @@ public class TapScanVideos {
     }
 
     private static int[] center(String bounds) {
-
         bounds = bounds.replace("[", "").replace("]", ",");
         String[] parts = bounds.split(",");
 
@@ -169,36 +229,36 @@ public class TapScanVideos {
         int x2 = Integer.parseInt(parts[2]);
         int y2 = Integer.parseInt(parts[3]);
 
-        return new int[]{
+        return new int[] {
                 (x1 + x2) / 2,
                 (y1 + y2) / 2
         };
     }
 
     private static String run(String... cmd) throws Exception {
-
         ProcessBuilder pb = new ProcessBuilder(cmd);
         pb.redirectErrorStream(true);
 
         Process p = pb.start();
 
         ByteArrayOutputStream baos = new ByteArrayOutputStream();
-
         try (InputStream is = p.getInputStream()) {
             is.transferTo(baos);
         }
 
         int exit = p.waitFor();
+        String output = baos.toString();
 
         if (exit != 0) {
-            throw new RuntimeException("Command failed");
+            throw new RuntimeException(
+                    "Command failed: " + String.join(" ", cmd) + "\n" + output
+            );
         }
 
-        return baos.toString();
+        return output;
     }
 
     private static class VideoCard {
-
         final String time;
         final int menuX;
         final int menuY;
@@ -211,7 +271,6 @@ public class TapScanVideos {
     }
 
     private static class DumpResult {
-
         final List<VideoCard> cards;
 
         DumpResult(List<VideoCard> cards) {

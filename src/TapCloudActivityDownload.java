@@ -24,10 +24,12 @@ public class TapCloudActivityDownload {
     private static final String DEVICE = "emulator-5554";
     private static final String REMOTE_XML = "/sdcard/window_dump.xml";
 
-    private static final int SWIPE_X = 672;
-    private static final int SWIPE_START_Y = 2140;
-    private static final int SWIPE_END_Y = 1420;
-    private static final int SWIPE_DURATION_MS = 1400;
+    private static final int SWIPE_X = 620;
+    private static final int SWIPE_START_Y = 1860;
+    private static final int SWIPE_END_Y = 1660;
+    private static final int SWIPE_DURATION_MS = 900;
+    private static final int FALLBACK_CLOSE_DOWNLOAD_SCREEN_X = 72;
+    private static final int FALLBACK_CLOSE_DOWNLOAD_SCREEN_Y = 315;
 
     private static final long WAIT_AFTER_SWIPE_MS = 1400;
     private static final long WAIT_AFTER_MENU_OPEN_MS = 450;
@@ -87,6 +89,7 @@ public class TapCloudActivityDownload {
 
             slowSwipeListUp();
             Thread.sleep(WAIT_AFTER_SWIPE_MS);
+            closeDownloadScreenIfOpened();
         }
 
         long elapsedMs = (System.nanoTime() - started) / 1_000_000L;
@@ -349,7 +352,10 @@ public class TapCloudActivityDownload {
     }
 
     private static void slowSwipeListUp() throws Exception {
-        log("Swipe up slowly");
+        log("Swipe up slowly: x=" + SWIPE_X
+                + ", startY=" + SWIPE_START_Y
+                + ", endY=" + SWIPE_END_Y
+                + ", durationMs=" + SWIPE_DURATION_MS);
         run(
                 ADB, "-s", DEVICE, "shell", "input", "swipe",
                 String.valueOf(SWIPE_X),
@@ -358,6 +364,114 @@ public class TapCloudActivityDownload {
                 String.valueOf(SWIPE_END_Y),
                 String.valueOf(SWIPE_DURATION_MS)
         );
+    }
+
+    private static void closeDownloadScreenIfOpened() throws Exception {
+        Document doc = dumpCurrentWindow();
+        if (!isDownloadScreen(doc)) {
+            return;
+        }
+
+        log("Download screen opened after swipe, closing it");
+
+        if (tapDownloadScreenCloseByXml(doc)) {
+            Thread.sleep(300);
+            return;
+        }
+
+        log("Close button not found in XML, fallback tap: "
+                + FALLBACK_CLOSE_DOWNLOAD_SCREEN_X + ","
+                + FALLBACK_CLOSE_DOWNLOAD_SCREEN_Y);
+        tap(FALLBACK_CLOSE_DOWNLOAD_SCREEN_X, FALLBACK_CLOSE_DOWNLOAD_SCREEN_Y);
+        Thread.sleep(300);
+    }
+
+    private static boolean isDownloadScreen(Document doc) {
+        NodeList nodes = doc.getElementsByTagName("node");
+        boolean hasDownloadTitle = false;
+        boolean hasCompleteStatus = false;
+
+        for (int i = 0; i < nodes.getLength(); i++) {
+            Element el = (Element) nodes.item(i);
+            String text = safe(el.getAttribute("text"));
+            int[] point = center(el.getAttribute("bounds"));
+
+            if ("Download".equalsIgnoreCase(text) && point[1] > 150 && point[1] < 650) {
+                hasDownloadTitle = true;
+            }
+
+            if (containsIgnoreCase(text, "complete")) {
+                hasCompleteStatus = true;
+            }
+        }
+
+        return hasDownloadTitle || (hasDownloadTitle && hasCompleteStatus);
+    }
+
+    private static boolean tapDownloadScreenCloseByXml(Document doc) throws Exception {
+        NodeList nodes = doc.getElementsByTagName("node");
+        Element best = null;
+        int bestScore = Integer.MIN_VALUE;
+
+        for (int i = 0; i < nodes.getLength(); i++) {
+            Element el = (Element) nodes.item(i);
+            String text = safe(el.getAttribute("text"));
+            String contentDesc = safe(el.getAttribute("content-desc"));
+            String clickable = safe(el.getAttribute("clickable"));
+            int[] rect = parseBounds(el.getAttribute("bounds"));
+            if (rect == null) {
+                continue;
+            }
+
+            int centerX = (rect[0] + rect[2]) / 2;
+            int centerY = (rect[1] + rect[3]) / 2;
+            int width = rect[2] - rect[0];
+            int height = rect[3] - rect[1];
+
+            boolean topLeftCandidate =
+                    "true".equals(clickable)
+                            && centerX < 220
+                            && centerY > 150
+                            && centerY < 650
+                            && width <= 180
+                            && height <= 180;
+
+            boolean explicitClose =
+                    containsIgnoreCase(contentDesc, "close")
+                            || containsIgnoreCase(contentDesc, "back")
+                            || containsIgnoreCase(text, "close")
+                            || "x".equalsIgnoreCase(text)
+                            || "×".equals(text);
+
+            if (!topLeftCandidate && !explicitClose) {
+                continue;
+            }
+
+            int score = 0;
+            if (explicitClose) {
+                score += 1000;
+            }
+            if (topLeftCandidate) {
+                score += 500;
+            }
+
+            score -= Math.abs(centerX - FALLBACK_CLOSE_DOWNLOAD_SCREEN_X);
+            score -= Math.abs(centerY - FALLBACK_CLOSE_DOWNLOAD_SCREEN_Y);
+
+            if (score > bestScore) {
+                bestScore = score;
+                best = el;
+            }
+        }
+
+        if (best == null) {
+            return false;
+        }
+
+        int[] point = center(best.getAttribute("bounds"));
+        log("Close Download screen by XML: " + point[0] + "," + point[1]);
+        tap(point[0], point[1]);
+        return true;
     }
 
     private static int[] parseBounds(String bounds) {

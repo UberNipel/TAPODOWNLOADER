@@ -25,8 +25,8 @@ public class TapCloudActivityDownload {
     private static final String REMOTE_XML = "/sdcard/window_dump.xml";
 
     private static final int SWIPE_X = 672;
-    private static final int SWIPE_START_Y = 2410;
-    private static final int SWIPE_END_Y = 1560;
+    private static final int SWIPE_START_Y = 2140;
+    private static final int SWIPE_END_Y = 1420;
     private static final int SWIPE_DURATION_MS = 1400;
 
     private static final long WAIT_AFTER_SWIPE_MS = 1400;

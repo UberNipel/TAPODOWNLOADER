@@ -24,10 +24,10 @@ public class TapCloudActivityDownload {
     private static final String DEVICE = "emulator-5554";
     private static final String REMOTE_XML = "/sdcard/window_dump.xml";
 
-    private static final int SWIPE_X = 620;
-    private static final int SWIPE_START_Y = 1860;
-    private static final int SWIPE_END_Y = 1660;
-    private static final int SWIPE_DURATION_MS = 900;
+    private static final int PROCESS_SWIPE_X = 620;
+    private static final int PROCESS_UP_START_Y = 1180;
+    private static final int PROCESS_UP_END_Y = 2140;
+    private static final int PROCESS_UP_DURATION_MS = 800;
     private static final int FALLBACK_CLOSE_DOWNLOAD_SCREEN_X = 72;
     private static final int FALLBACK_CLOSE_DOWNLOAD_SCREEN_Y = 315;
 
@@ -40,24 +40,31 @@ public class TapCloudActivityDownload {
 
     public static void main(String[] args) throws Exception {
         long started = System.nanoTime();
-        Set<String> seenCardIds = new LinkedHashSet<>();
+        Set<String> downloadedCardIds = new LinkedHashSet<>();
         int emptyScrolls = 0;
 
         log("Started Cloud Activity downloader");
-
         while (true) {
             DumpResult dump = dumpAndParse();
             List<VideoCard> freshCards = new ArrayList<>();
 
             for (VideoCard card : dump.cards) {
-                if (seenCardIds.add(card.uniqueId)) {
+                if (!downloadedCardIds.contains(card.uniqueId)) {
                     freshCards.add(card);
                 }
             }
 
+            freshCards.sort((a, b) -> {
+                int byY = Integer.compare(b.menuY, a.menuY);
+                if (byY != 0) {
+                    return byY;
+                }
+                return b.time.compareTo(a.time);
+            });
+
             log("Visible cards: " + dump.cards.size()
                     + ", fresh cards: " + freshCards.size()
-                    + ", total seen: " + seenCardIds.size());
+                    + ", total downloaded: " + downloadedCardIds.size());
 
             for (VideoCard card : freshCards) {
                 log("Downloading " + card.uniqueId);
@@ -74,6 +81,7 @@ public class TapCloudActivityDownload {
                 }
 
                 Thread.sleep(WAIT_AFTER_DOWNLOAD_TAP_MS);
+                downloadedCardIds.add(card.uniqueId);
             }
 
             if (freshCards.isEmpty()) {
@@ -87,13 +95,14 @@ public class TapCloudActivityDownload {
                 break;
             }
 
-            slowSwipeListUp();
+            slowSwipeListUpOneCard();
             Thread.sleep(WAIT_AFTER_SWIPE_MS);
             closeDownloadScreenIfOpened();
         }
 
         long elapsedMs = (System.nanoTime() - started) / 1_000_000L;
-        log("Finished. Total unique cards: " + seenCardIds.size() + ", elapsed ms: " + elapsedMs);
+        log("Finished. Total downloaded cards: " + downloadedCardIds.size()
+                + ", elapsed ms: " + elapsedMs);
     }
 
     private static DumpResult dumpAndParse() throws Exception {
@@ -351,18 +360,18 @@ public class TapCloudActivityDownload {
         return text != null && text.matches("\\d{2}:\\d{2}:\\d{2}");
     }
 
-    private static void slowSwipeListUp() throws Exception {
-        log("Swipe up slowly: x=" + SWIPE_X
-                + ", startY=" + SWIPE_START_Y
-                + ", endY=" + SWIPE_END_Y
-                + ", durationMs=" + SWIPE_DURATION_MS);
+    private static void slowSwipeListUpOneCard() throws Exception {
+        log("Swipe up one card: x=" + PROCESS_SWIPE_X
+                + ", startY=" + PROCESS_UP_START_Y
+                + ", endY=" + PROCESS_UP_END_Y
+                + ", durationMs=" + PROCESS_UP_DURATION_MS);
         run(
                 ADB, "-s", DEVICE, "shell", "input", "swipe",
-                String.valueOf(SWIPE_X),
-                String.valueOf(SWIPE_START_Y),
-                String.valueOf(SWIPE_X),
-                String.valueOf(SWIPE_END_Y),
-                String.valueOf(SWIPE_DURATION_MS)
+                String.valueOf(PROCESS_SWIPE_X),
+                String.valueOf(PROCESS_UP_START_Y),
+                String.valueOf(PROCESS_SWIPE_X),
+                String.valueOf(PROCESS_UP_END_Y),
+                String.valueOf(PROCESS_UP_DURATION_MS)
         );
     }
 

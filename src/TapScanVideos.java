@@ -16,7 +16,7 @@ import java.util.Set;
 public class TapScanVideos {
 
     private static final String ADB =
-            "C:\\Users\\ubern\\AppData\\Local\\Android\\Sdk\\platform-tools\\adb.exe";
+            "C:\\Users\\oleh\\AppData\\Local\\Android\\Sdk\\platform-tools\\adb.exe";
 
     private static final String DEVICE = "emulator-5554";
     private static final String REMOTE_XML = "/sdcard/window_dump.xml";
